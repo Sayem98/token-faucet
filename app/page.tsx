@@ -1,13 +1,12 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useAppKit, useAppKitAccount } from "@reown/appkit/react"; // Removed useAppKitBalance
-// 1. Import Wagmi hooks (Added useBalance)
+import { useAppKit, useAppKitAccount } from "@reown/appkit/react";
 import {
   useReadContract,
   useWriteContract,
   useWaitForTransactionReceipt,
-  useBalance, // <--- Import this
+  useBalance,
 } from "wagmi";
 import { FAUCET_ABI } from "../abis";
 import { formatEther } from "viem";
@@ -16,7 +15,7 @@ type TransactionStatus = "idle" | "pending" | "success" | "error";
 
 export default function Home() {
   const [isMounted, setIsMounted] = useState(false);
-  const contractAddress = "0x1c7D570aeD9B0006C787335e1e4954Defdb3F3Ce";
+  const contractAddress = "0xB66C982cE2720e38196D7672a31CA2ecF3ca6Ee4";
 
   // Reown Hooks
   const { open } = useAppKit();
@@ -25,14 +24,15 @@ export default function Home() {
   // Local State
   const [status, setStatus] = useState<TransactionStatus>("idle");
   const [errorMsg, setErrorMsg] = useState("");
+  const [txHash, setTxHash] = useState<`0x${string}` | undefined>(undefined); // Added state for Hash
 
   // --- WAGMI HOOKS START ---
 
-  // 1. READ: Native Balance (Replaces the manual useEffect)
+  // 1. READ: Native Balance
   const { data: balance } = useBalance({
     address: address as `0x${string}`,
     query: {
-      enabled: !!address, // Only fetch if address exists
+      enabled: !!address,
     },
   });
 
@@ -47,18 +47,17 @@ export default function Home() {
     },
   });
 
-  // 3. WRITE: Call claimTokens()
+  // 3. WRITE: Use writeContractAsync
   const {
-    data: hash,
-    error: writeError,
+    writeContractAsync, // <--- Key Change: Use Async version
     isPending: isWritePending,
-    writeContract,
+    // Note: We handle errors manually in try/catch now, but can still use 'error' state if needed
   } = useWriteContract();
 
-  // 4. WAIT: Watch for Transaction Receipt
+  // 4. WAIT: Watch for Transaction Receipt using the local txHash
   const { isLoading: isConfirming, isSuccess: isConfirmed } =
     useWaitForTransactionReceipt({
-      hash,
+      hash: txHash,
     });
 
   // --- WAGMI HOOKS END ---
@@ -74,25 +73,41 @@ export default function Home() {
     } else if (isConfirmed) {
       setStatus("success");
       refetchCooldown();
-    } else if (writeError) {
-      setStatus("error");
-      setErrorMsg(
-        writeError.message.includes("User rejected")
-          ? "Transaction rejected"
-          : "Transaction failed",
-      );
     }
-  }, [isWritePending, isConfirming, isConfirmed, writeError, refetchCooldown]);
+    // We removed the automatic error effect because we will catch errors directly in handleClaim
+  }, [isWritePending, isConfirming, isConfirmed, refetchCooldown]);
 
   const handleClaim = async () => {
+    if (!isConnected) return;
+
     setErrorMsg("");
     setStatus("pending");
 
-    writeContract({
-      address: contractAddress as `0x${string}`,
-      abi: FAUCET_ABI,
-      functionName: "claimTokens",
-    });
+    try {
+      // Execute the transaction and wait for the user to sign
+      const hash = await writeContractAsync({
+        address: contractAddress as `0x${string}`,
+        abi: FAUCET_ABI,
+        functionName: "claimTokens",
+      });
+
+      console.log("Tx Hash:", hash);
+      setTxHash(hash); // Trigger the WaitForTransactionReceipt hook
+    } catch (err: any) {
+      console.error("Claim Error:", err);
+      setStatus("error");
+
+      // Better error messages
+      if (err.message.includes("User rejected")) {
+        setErrorMsg("Transaction rejected by user.");
+      } else if (err.message.includes("Cooldown active")) {
+        setErrorMsg("Cooldown is still active.");
+      } else if (err.message.includes("Faucet is empty")) {
+        setErrorMsg("Faucet is empty.");
+      } else {
+        setErrorMsg("Transaction failed. See console.");
+      }
+    }
   };
 
   const formatCooldown = (seconds: bigint | number) => {
@@ -250,7 +265,7 @@ export default function Home() {
                   )
                 ) : status === "success" ? (
                   <a
-                    href={`https://testnet.bscscan.com/tx/${hash}`}
+                    href={`https://testnet.bscscan.com/tx/${txHash}`}
                     target="_blank"
                     className="underline hover:text-white"
                   >
@@ -286,4 +301,3 @@ export default function Home() {
     </main>
   );
 }
-
